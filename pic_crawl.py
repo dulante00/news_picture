@@ -2,20 +2,32 @@
 #_*_coding:utf-8_*_
 import shutil
 import re
+
+import pymysql
 import requests.packages.urllib3.util.ssl_
 import os
 import requests
-CURRENT_URL=''
-LINK_LIST=[]        #存放网页中图片地址的链接
-TIMEOUT=50          #请求超时记录
+import time
+
+CURRENT_URL=''       #当前正在解析的网页URL
+#LINK_LIST=[]         #存放网页中图片地址的链接
+TIMEOUT=50           #请求超时记录
 #MIN_PIC_SIZE=20000  #用于筛选较小的无用图片
-MAX_PIC_COUNT=8     #每个网页最多保留的图片个数
+MAX_PIC_COUNT=8      #每个网页最多保留的图片个数
 PIC_BEGIN=1
 URL_FILE_PATH='/Users/cp3/PycharmProjects/PicCrawl/url.txt'     #存放url的文件位置
-DEST_FILE_PATH='/Users/cp3/Desktop/pic_result/{0}'              #最终新闻正文图片的保存位置
-FILE_PATH='/Users/cp3/Desktop/pic'                              #图片保存的文件夹
-PIC_PATH='/Users/cp3/Desktop/pic/{0}'                           #图片的保存路径
+DEST_FILE_PATH='/Users/cp3/Desktop/组/pic_result/{0}/{1}'          #最终新闻正文图片的保存位置
+FILE_PATH='/Users/cp3/Desktop/组/pic'                              #图片保存的文件夹
+PIC_PATH='/Users/cp3/Desktop/组/pic/{0}'                           #图片的保存路径
 
+#将数据插入到数据库中
+def insertIntoMysql(url,dir):
+    db = pymysql.connect('localhost', 'root', '', 'test')
+    cursor = db.cursor()
+    sql = 'insert into work(url,dir) values ("{0}","{1}")'.format(url, dir)
+    cursor.execute(sql)
+    db.commit()
+    print('插入数据库成功!')
 #删除指定名字图片
 def picDelete(filename):
     file_path=PIC_PATH.format(filename)
@@ -29,7 +41,11 @@ def picDelete(filename):
 def destFile(link):
     proxies={'http': 'http://127.0.0.1:8087', 'https': 'http://127.0.0.1:8087'}
     fileName = link.split('/').pop()       #取最后的标识符
-    img = requests.get(link, proxies=proxies, verify=False).content
+    try:
+        img = requests.get(link, proxies=proxies, verify=False,timeout=TIMEOUT).content
+    except:
+        print("Time out!")
+        return
     f = open(PIC_PATH.format(fileName), 'wb')
     f.write(img)
     f.close()
@@ -69,7 +85,6 @@ def cleanMorePic():
 def cleanSurplusPic():
     list_pic={}                                       #保存此网页图片大小的列表 key:图片大小,value:图片名
     list_pic_name=os.listdir(FILE_PATH)               #此次的图片列表
-    #print(list_pic_name)
     for pic in list_pic_name[1:]:
         metadata=os.stat(PIC_PATH.format(pic))        #图片的元数据
         list_pic.setdefault(metadata.st_size,pic)     #图片大小和图片名的字典
@@ -85,13 +100,10 @@ def cleanSurplusPic():
 
 #返回一共下载了多少张图片
 def downLoad(contentBytes):
-    count_pic = 0     # 记录此次下载的总的图片数量
-    global LINK_LIST  #每次初始化列表
-    LINK_LIST=[]
+    count_pic = 0                                       # 记录此次下载的总的图片数量
     for link in re.findall(r'src=[\S\s]{5,90}\.jpg', str(contentBytes)):
         link = urlAutoComplete(link[5:])                #去除网页中的src="这五个字符
         count_pic += 1
-        LINK_LIST.append(link)                          #将链接加入到列表中
         destFile(link)                                  #以图片的url来命名图片
     print("共有图片%d张" % count_pic)
                                                         #只要最后八张图片
@@ -103,9 +115,19 @@ def movPic():
     global PIC_PATH
     global FILE_PATH
     global DEST_FILE_PATH
+    global CURRENT_URL
+    date=time.strftime('%Y.%m.%d',time.localtime())     #爬取网页的当天日期
+    site=CURRENT_URL[CURRENT_URL.index('//')+2:]        #网站的网址
+    site=re.sub(r'/','_',site)
+    #print('site=',site)
     list_pic_name=os.listdir(FILE_PATH)
+    dest_path = DEST_FILE_PATH.format(date, site)
+    if not os.path.exists(dest_path):
+        os.makedirs(dest_path)                          # 如果目录文件夹不存在,创建
+        insertIntoMysql(CURRENT_URL, dest_path)
+    dest_path+='/{0}'
     for pic in list_pic_name[1:]:
-        shutil.move(PIC_PATH.format(pic), DEST_FILE_PATH.format(pic))
+        shutil.move(PIC_PATH.format(pic),dest_path.format(pic))
 
 #URL自动补全
 def urlAutoComplete(url):
@@ -118,7 +140,7 @@ def urlAutoComplete(url):
 def getOneUrl(path):
     global CURRENT_URL
     proxies = {'http': 'http://127.0.0.1:8087', 'https': 'http://127.0.0.1:8087'}
-    CURRENT_URL="http://www.ntdtv.com/xtr/gb/2016/07/17/a1276571.html"
+    CURRENT_URL="http://global.dwnews.com/news/2016-07-18/59754444.html"
     try:                                                  #关闭证书校验
         res = requests.get(CURRENT_URL, proxies=proxies,verify=False)
     except TimeoutError:
@@ -128,13 +150,14 @@ def getOneUrl(path):
 
 #读取文件中的url进行测试
 def getAllUrl():
+    global CURRENT_URL
     proxies = {'http': 'http://127.0.0.1:8087', 'https': 'http://127.0.0.1:8087'}
     count_n = 0
     for line in open(URL_FILE_PATH):
         if re.search(r'dwnews', line):
-            url = re.findall(r'http[\s\S]*?.html', line)[0]
-            print('\n网址:', url)                            #关闭证书校验
-            res = requests.get(url, proxies=proxies,verify=False)
+            CURRENT_URL = re.findall(r'http[\s\S]*?.html', line)[0]
+            print('\n网址:', CURRENT_URL)                            #关闭证书校验
+            res = requests.get(CURRENT_URL, proxies=proxies,verify=False)
             contentBytes = res.text
             count_n += 1
             downLoad(contentBytes)                           #一共下载的图片个数
